@@ -24,8 +24,6 @@ Optional Optuna hyperparameter tuning for the best-performing model.
 
 ```
 main.py                    # Main training pipeline
-generate_report.py         # Full PDF report
-generate_summary_report.py # 3-page summary PDF
 src/
   config.py                # Paths, feature lists, constants
   data_quality.py          # Loading, cleaning, deduplication
