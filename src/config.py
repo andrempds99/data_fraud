@@ -50,8 +50,14 @@ RESPONSE_FIXES = {
 # ── Feature groups for the preprocessor ───────────────────────────────────────
 NUMERIC_FEATURES = [
     "euramount",
+    "euramount_capped",
     "log_euramount",
-    "card_txn_7d",           # rolling 7-day card velocity (replaces lifetime card_txn_count)
+    "card_txn_1d",           # rolling 1-day card velocity
+    "card_txn_3d",           # rolling 3-day card velocity
+    "card_txn_7d",           # rolling 7-day card velocity
+    "card_txn_14d",          # rolling 14-day card velocity
+    "card_txn_30d",          # rolling 30-day card velocity
+    "hours_since_last_txn",  # hours since last transaction for this card
     "card_avg_amount",
     "merchant_txn_count",
     "amount_deviation",
@@ -59,6 +65,10 @@ NUMERIC_FEATURES = [
     "dayofweek",
     "day",
     "is_weekend",
+    "hour_sin",              # cyclical hour encoding (sin)
+    "hour_cos",              # cyclical hour encoding (cos)
+    "dow_sin",               # cyclical day-of-week encoding (sin)
+    "dow_cos",               # cyclical day-of-week encoding (cos)
     "card_billing_mismatch",
     "geoip_billing_mismatch",
     "domain_freq",
@@ -68,6 +78,8 @@ NUMERIC_FEATURES = [
     "threedsused",
     "success",
     "cardholder_disposabledomain_boolean",
+    "card_merchant_first",   # first time this card uses this merchant
+    "card_unique_merchants", # number of distinct merchants for this card
 ]
 
 CATEGORICAL_FEATURES = [

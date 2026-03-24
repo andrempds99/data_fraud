@@ -27,7 +27,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.base import clone
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, roc_auc_score
 
 # Suppress only well-understood, benign warnings from third-party libraries.
 # Do NOT use a blanket category-level suppression — it hides real issues.
@@ -39,16 +39,31 @@ warnings.filterwarnings(
     category=UserWarning,
 )
 
-from src.config import OUTPUT_DIR, SEED
+from src.config import OUTPUT_DIR, SEED, NUMERIC_FEATURES, CATEGORICAL_FEATURES
 from src.data_quality import load_data, run_quality_pipeline
 from src.features import run_feature_pipeline
 from src.model import (
     split_data_temporal,
     train_all_models,
     tune_lightgbm,
+    tune_xgboost,
     cross_validate_temporal,
+    build_stacking_ensemble,
+    calibrate_model,
+    train_with_smote,
+    build_baseline_xgboost,
+    build_preprocessor,
 )
-from src.evaluation import evaluate_model, find_recall_thresholds, plot_learning_curves, plot_roc_comparison, plot_pr_comparison, plot_metrics_comparison
+from src.evaluation import (
+    evaluate_model,
+    find_recall_thresholds,
+    plot_learning_curves,
+    plot_roc_comparison,
+    plot_pr_comparison,
+    plot_metrics_comparison,
+    plot_shap_summary,
+    plot_overfit_comparison,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -118,7 +133,7 @@ def main():
     logger.info("=" * 60)
     logger.info("  STEP 5: TRAINING CLASSIFIERS")
     logger.info("=" * 60)
-    models = train_all_models(X_train_fe, y_tr)
+    models = train_all_models(X_train_fe, y_tr, X_val_fe, y_val)
 
     # ── 6. Evaluate all models + optional CV ranking ───────────────────
     logger.info("=" * 60)
@@ -138,6 +153,34 @@ def main():
             best_model_name = name
         all_recall_dfs.append(recall_df)
         all_model_probs[name] = y_prob
+
+    # ── 6a. Stacking ensemble (filter underperforming models) ───────────
+    logger.info("=" * 60)
+    logger.info("  STEP 6a: STACKING ENSEMBLE")
+    logger.info("=" * 60)
+    MIN_ROC_AUC_STACK = 0.6
+    stacking_models = {}
+    for sname, smodel in models.items():
+        val_prob_s = smodel.predict_proba(X_val_fe)[:, 1]
+        roc_s = roc_auc_score(y_val, val_prob_s)
+        if roc_s >= MIN_ROC_AUC_STACK:
+            stacking_models[sname] = smodel
+        else:
+            logger.warning("  Excluding %s from stacking (ROC-AUC=%.4f < %.2f)",
+                           sname, roc_s, MIN_ROC_AUC_STACK)
+    if len(stacking_models) < 2:
+        logger.warning("  Fewer than 2 models passed filter; using all models for stacking.")
+        stacking_models = models
+    stacking_model = build_stacking_ensemble(
+        stacking_models, X_train_fe, y_tr, X_val_fe, y_val
+    )
+    stack_prob = stacking_model.predict_proba(X_val_fe)[:, 1]
+    stack_pr_auc = average_precision_score(y_val, stack_prob)
+    logger.info("  Stacking PR-AUC: %.4f", stack_pr_auc)
+    all_model_probs["Stacking"] = stack_prob
+    if stack_pr_auc > best_pr_auc:
+        best_pr_auc = stack_pr_auc
+        best_model_name = "Stacking"
 
     # ── Comparison plots across all models ─────────────────────────────
     plot_roc_comparison(y_val, all_model_probs)
@@ -170,29 +213,115 @@ def main():
     recall_summary.to_csv(recall_path, index=False)
     logger.info("Recall summary saved to %s", recall_path)
 
+    # ── 6c. SMOTE resampling comparison ───────────────────────────────────
+    logger.info("=" * 60)
+    logger.info("  STEP 6c: SMOTE RESAMPLING COMPARISON")
+    logger.info("=" * 60)
+    smote_model = train_with_smote(
+        models[best_model_name], X_train_fe, y_tr, best_model_name
+    )
+    smote_prob = smote_model.predict_proba(X_val_fe)[:, 1]
+    smote_pr_auc = average_precision_score(y_val, smote_prob)
+    logger.info("  %s (class weights) PR-AUC: %.4f", best_model_name, best_pr_auc)
+    logger.info("  %s (SMOTE)         PR-AUC: %.4f", best_model_name, smote_pr_auc)
+    if smote_pr_auc > best_pr_auc:
+        logger.info("  \u2192 SMOTE improves performance; switching to SMOTE-trained model.")
+        best_model_name_final = best_model_name + "_SMOTE"
+        best_pr_auc = smote_pr_auc
+        smote_wins = True
+    else:
+        logger.info("  \u2192 Class weights outperform SMOTE; keeping original model.")
+        best_model_name_final = best_model_name
+        smote_wins = False
+
     # ── 7. Best model selection ──────────────────────────────────────────
     logger.info("=" * 60)
     logger.info("  BEST MODEL: %s  (PR-AUC = %.4f)", best_model_name, best_pr_auc)
     logger.info("=" * 60)
-    best_model = models[best_model_name]
+    if smote_wins:
+        best_model = smote_model
+    elif best_model_name == "Stacking":
+        best_model = stacking_model
+    else:
+        best_model = models[best_model_name]
+
+    # ── 7a. Overfitting mitigation demonstration ───────────────────────
+    logger.info("=" * 60)
+    logger.info("  STEP 7a: OVERFITTING MITIGATION COMPARISON")
+    logger.info("=" * 60)
+    num_feats = [c for c in NUMERIC_FEATURES if c in X_train_fe.columns]
+    cat_feats = [c for c in CATEGORICAL_FEATURES if c in X_train_fe.columns]
+    pos_weight = (y_tr == 0).sum() / max((y_tr == 1).sum(), 1)
+    baseline_pipe = build_baseline_xgboost(
+        build_preprocessor(num_feats, cat_feats), pos_weight
+    )
+    baseline_pipe.fit(X_train_fe, y_tr)
+    bl_train_prob = baseline_pipe.predict_proba(X_train_fe)[:, 1]
+    bl_val_prob = baseline_pipe.predict_proba(X_val_fe)[:, 1]
+    baseline_m = {
+        "train_roc": roc_auc_score(y_tr, bl_train_prob),
+        "val_roc":   roc_auc_score(y_val, bl_val_prob),
+        "train_pr":  average_precision_score(y_tr, bl_train_prob),
+        "val_pr":    average_precision_score(y_val, bl_val_prob),
+    }
+    reg_model_for_cmp = models.get("XGBoost", models[best_model_name])
+    rg_train_prob = reg_model_for_cmp.predict_proba(X_train_fe)[:, 1]
+    rg_val_prob = reg_model_for_cmp.predict_proba(X_val_fe)[:, 1]
+    reg_m = {
+        "train_roc": roc_auc_score(y_tr, rg_train_prob),
+        "val_roc":   roc_auc_score(y_val, rg_val_prob),
+        "train_pr":  average_precision_score(y_tr, rg_train_prob),
+        "val_pr":    average_precision_score(y_val, rg_val_prob),
+    }
+    logger.info("  Baseline  (no reg)   — Train ROC=%.4f  Val ROC=%.4f  gap=%.4f",
+                baseline_m["train_roc"], baseline_m["val_roc"],
+                baseline_m["train_roc"] - baseline_m["val_roc"])
+    logger.info("  Regularised          — Train ROC=%.4f  Val ROC=%.4f  gap=%.4f",
+                reg_m["train_roc"], reg_m["val_roc"],
+                reg_m["train_roc"] - reg_m["val_roc"])
+    plot_overfit_comparison(baseline_m, reg_m, name="XGBoost")
 
     # ── 7b. Optional Optuna tuning (env: TUNE_HYPERPARAMS=1) ─────────────
     if TUNE_HYPERPARAMS:
         logger.info("=" * 60)
         logger.info("  STEP 7b: OPTUNA HYPERPARAMETER TUNING (n_trials=50)")
         logger.info("=" * 60)
-        tuned_model = tune_lightgbm(X_train_fe, y_tr, n_trials=50)
-        tuned_prob  = tuned_model.predict_proba(X_val_fe)[:, 1]
-        tuned_pr_auc = average_precision_score(y_val, tuned_prob)
-        logger.info(
-            "Tuned PR-AUC: %.4f  vs  baseline best: %.4f",
-            tuned_pr_auc, best_pr_auc,
-        )
-        if tuned_pr_auc > best_pr_auc:
-            best_model = tuned_model
-            best_pr_auc = tuned_pr_auc
+
+        # Tune LightGBM
+        tuned_lgb = tune_lightgbm(X_train_fe, y_tr, n_trials=50)
+        tuned_lgb_prob  = tuned_lgb.predict_proba(X_val_fe)[:, 1]
+        tuned_lgb_pr_auc = average_precision_score(y_val, tuned_lgb_prob)
+        logger.info("Tuned LightGBM PR-AUC: %.4f", tuned_lgb_pr_auc)
+
+        # Tune XGBoost
+        tuned_xgb = tune_xgboost(X_train_fe, y_tr, n_trials=50)
+        tuned_xgb_prob  = tuned_xgb.predict_proba(X_val_fe)[:, 1]
+        tuned_xgb_pr_auc = average_precision_score(y_val, tuned_xgb_prob)
+        logger.info("Tuned XGBoost PR-AUC: %.4f", tuned_xgb_pr_auc)
+
+        # Pick the best tuned model
+        if tuned_lgb_pr_auc >= tuned_xgb_pr_auc and tuned_lgb_pr_auc > best_pr_auc:
+            best_model = tuned_lgb
+            best_pr_auc = tuned_lgb_pr_auc
             best_model_name = "LightGBM_Tuned"
-            logger.info("Switching to Optuna-tuned model as best.")
+            logger.info("Switching to Optuna-tuned LightGBM as best.")
+        elif tuned_xgb_pr_auc > best_pr_auc:
+            best_model = tuned_xgb
+            best_pr_auc = tuned_xgb_pr_auc
+            best_model_name = "XGBoost_Tuned"
+            logger.info("Switching to Optuna-tuned XGBoost as best.")
+
+    # ── 7c. SHAP explainability ─────────────────────────────────────────
+    logger.info("=" * 60)
+    logger.info("  STEP 7c: SHAP EXPLAINABILITY")
+    logger.info("=" * 60)
+    plot_shap_summary(best_model, X_val_fe, name=best_model_name)
+
+    # ── 7d. Probability calibration ──────────────────────────────────────
+    logger.info("=" * 60)
+    logger.info("  STEP 7d: PROBABILITY CALIBRATION")
+    logger.info("=" * 60)
+    best_model = calibrate_model(best_model, X_val_fe, y_val, method="isotonic")
 
     # ── 8. Serialise best model + lookup tables ───────────────────────────
     model_path  = os.path.join(OUTPUT_DIR, "best_model.joblib")

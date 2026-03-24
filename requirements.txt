@@ -8,3 +8,4 @@ matplotlib>=3.7
 seaborn>=0.12
 optuna>=3.0
 joblib>=1.2
+shap>=0.42

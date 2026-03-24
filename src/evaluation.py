@@ -363,3 +363,109 @@ def plot_metrics_comparison(y_true, model_probs):
     fig.savefig(path, dpi=150)
     plt.close(fig)
     logger.info("  Saved %s", path)
+
+
+# ── SHAP explainability ───────────────────────────────────────────────────────
+
+def plot_shap_summary(model, X_val, name="Model", max_display=20):
+    """Compute SHAP values and save beeswarm + bar summary plots."""
+    _ensure_output_dir()
+    try:
+        import shap
+    except ImportError:
+        logger.warning("  shap not installed (pip install shap), skipping.")
+        return
+
+    if not hasattr(model, "named_steps"):
+        logger.info("  SHAP: model is not a Pipeline, skipping.")
+        return
+
+    classifier = model.named_steps["classifier"]
+    preprocessor = model.named_steps["preprocessor"]
+    X_t = preprocessor.transform(X_val)
+
+    try:
+        feat_names = list(preprocessor.get_feature_names_out())
+    except AttributeError:
+        feat_names = [f"f{i}" for i in range(X_t.shape[1])]
+
+    logger.info("  Computing SHAP values for %s …", name)
+    clf_type = type(classifier).__name__
+    if clf_type in ("XGBClassifier", "LGBMClassifier",
+                     "RandomForestClassifier", "GradientBoostingClassifier"):
+        explainer = shap.TreeExplainer(classifier)
+    else:
+        logger.info("  SHAP: unsupported classifier %s, skipping.", clf_type)
+        return
+
+    shap_values = explainer.shap_values(X_t)
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1]  # positive (fraud) class
+
+    # Beeswarm plot
+    plt.figure(figsize=(10, 8))
+    shap.summary_plot(shap_values, X_t, feature_names=feat_names,
+                      max_display=max_display, show=False)
+    plt.tight_layout()
+    path = os.path.join(OUTPUT_DIR, f"shap_summary_{name}.png")
+    plt.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close()
+    logger.info("  Saved %s", path)
+
+    # Bar plot (mean |SHAP|)
+    plt.figure(figsize=(10, 8))
+    shap.summary_plot(shap_values, X_t, feature_names=feat_names,
+                      plot_type="bar", max_display=max_display, show=False)
+    plt.tight_layout()
+    path_bar = os.path.join(OUTPUT_DIR, f"shap_importance_{name}.png")
+    plt.savefig(path_bar, dpi=150, bbox_inches="tight")
+    plt.close()
+    logger.info("  Saved %s", path_bar)
+
+
+# ── Overfitting comparison plot ────────────────────────────────────────────────
+
+def plot_overfit_comparison(baseline_metrics, reg_metrics, name="XGBoost"):
+    """Bar chart showing train/val gap for baseline vs regularised models."""
+    _ensure_output_dir()
+    labels = ["Train ROC-AUC", "Val ROC-AUC", "Train PR-AUC", "Val PR-AUC"]
+    baseline = [baseline_metrics["train_roc"], baseline_metrics["val_roc"],
+                baseline_metrics["train_pr"], baseline_metrics["val_pr"]]
+    regularised = [reg_metrics["train_roc"], reg_metrics["val_roc"],
+                   reg_metrics["train_pr"], reg_metrics["val_pr"]]
+
+    x = np.arange(len(labels))
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bars1 = ax.bar(x - width / 2, baseline, width,
+                   label="Baseline (no regularisation)", color="#ff6b6b")
+    bars2 = ax.bar(x + width / 2, regularised, width,
+                   label="Regularised + early stopping", color="#4ecdc4")
+
+    ax.set_ylabel("Score")
+    ax.set_title(f"Overfitting Mitigation — {name}")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.legend()
+    ax.set_ylim(0, 1.1)
+
+    for bars in (bars1, bars2):
+        for bar in bars:
+            h = bar.get_height()
+            ax.annotate(f"{h:.3f}", xy=(bar.get_x() + bar.get_width() / 2, h),
+                        xytext=(0, 3), textcoords="offset points",
+                        ha="center", fontsize=9)
+
+    bl_gap = abs(baseline[0] - baseline[1])
+    rg_gap = abs(regularised[0] - regularised[1])
+    ax.text(0.02, 0.98,
+            f"ROC-AUC gap:  baseline={bl_gap:.3f}   regularised={rg_gap:.3f}",
+            transform=ax.transAxes, fontsize=9, verticalalignment="top",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5))
+
+    plt.tight_layout()
+    path = os.path.join(OUTPUT_DIR, f"overfit_comparison_{name}.png")
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    logger.info("  Saved %s", path)
