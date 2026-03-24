@@ -18,20 +18,7 @@ Identified and addressed several issues during exploration:
 
 ### 2. Feature Engineering
 
-<<<<<<< HEAD
 39 features (31 numeric + 8 categorical) across 6 categories:
-=======
-```
-main.py                    # Main training pipeline
-src/
-  config.py                # Paths, feature lists, constants
-  data_quality.py          # Loading, cleaning, deduplication
-  features.py              # Feature engineering & lookup tables
-  model.py                 # Preprocessing, training, cross-validation
-  evaluation.py            # Metrics, plots, threshold optimization
-output/                    # Models, predictions, per-model results
-```
->>>>>>> 39459d3c30ad605bf9b1f27a7e78a7116d2d16a4
 
 | Category | Features | Rationale |
 |----------|----------|-----------|
