@@ -489,6 +489,12 @@ def cross_validate_temporal(pipeline, X, y, cv_folds=3):
     ``split_data_temporal``).  Uses ``n_jobs=1`` to avoid nested parallelism
     when called from inside a loop that already trains multiple models.
     """
+    # cross_val_score doesn't pass a validation set, so early stopping must be
+    # disabled to avoid "Must have at least 1 validation dataset" errors.
+    final_step = pipeline[-1] if hasattr(pipeline, '__getitem__') else pipeline
+    if hasattr(final_step, 'early_stopping_rounds') and final_step.early_stopping_rounds:
+        final_step.set_params(early_stopping_rounds=None)
+
     tscv = TimeSeriesSplit(n_splits=cv_folds)
     scores = cross_val_score(
         pipeline, X, y, cv=tscv, scoring="average_precision", n_jobs=1
