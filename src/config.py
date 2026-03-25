@@ -85,6 +85,9 @@ NUMERIC_FEATURES = [
     "velocity_accel",        # card_txn_1d - card_txn_7d/7 (burst detection)
     "merchant_te",           # target-encoded merchant fraud propensity
     "issuingbank_te",        # target-encoded issuing bank fraud propensity
+    "amount_std_7d",         # amount std deviation for this card
+    "amount_max_min_ratio",  # max/min amount ratio for this card
+    "distinct_merchants_1d", # distinct merchants in recent window
 ]
 
 CATEGORICAL_FEATURES = [

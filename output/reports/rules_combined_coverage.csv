@@ -1,16 +1,16 @@
 n_rules,last_rule,precision,recall,n_flagged,n_fraud_hit,n_fraud_total,lift
 1,Issuing Bank Fraud Propensity <= 0.01 AND Merchant Fraud Propensity > 0.01 AND T,0.2222,0.0556,9,2,36,140.62
-2,Merchant Fraud Propensity > 0.00 AND Merchant Transaction Count > 14219.50,0.2143,0.1667,28,6,36,135.6
-3,Issuing Bank Fraud Propensity <= 0.01 AND Merchant Fraud Propensity > 0.01 AND T,0.1739,0.2222,46,8,36,110.05
-4,Issuing Bank Fraud Propensity <= 0.00 AND Merchant Fraud Propensity > 0.01 AND T,0.1739,0.2222,46,8,36,110.05
-5,Issuing Bank Fraud Propensity <= 0.01 AND Merchant Fraud Propensity > 0.01,0.1081,0.2222,74,8,36,68.41
-6,Issuing Bank Fraud Propensity > 0.01 AND Issuing Bank Fraud Propensity <= 0.02 A,0.0877,0.2778,114,10,36,55.51
-7,Issuing Bank Fraud Propensity > 0.02 AND Merchant Fraud Propensity > 0.00 AND Tr,0.0573,0.4167,262,15,36,36.23
-8,Issuing Bank Fraud Propensity > 0.01 AND Issuing Bank Fraud Propensity <= 0.02 A,0.0492,0.5,366,18,36,31.12
-9,Issuing Bank Fraud Propensity > 0.02 AND Merchant Fraud Propensity > 0.00 AND Tr,0.0492,0.5,366,18,36,31.12
-10,Issuing Bank Fraud Propensity > 0.02,0.0417,0.5,432,18,36,26.37
-11,Issuing Bank Fraud Propensity > 0.01 AND Issuing Bank Fraud Propensity <= 0.02 A,0.0374,0.5,481,18,36,23.68
-12,Issuing Bank Fraud Propensity > 0.01 AND Issuing Bank Fraud Propensity <= 0.02 A,0.0313,0.5,575,18,36,19.81
-13,Issuing Bank Fraud Propensity > 0.01 AND Transaction Success = Yes AND Card Txn ,0.0196,0.6111,1120,22,36,12.43
-14,Issuing Bank Fraud Propensity > 0.00 AND Transaction Success = Yes AND Card Txn ,0.0175,0.7778,1600,28,36,11.07
-15,Issuing Bank Fraud Propensity <= 0.00 AND Merchant Fraud Propensity > 0.00 AND T,0.0175,0.8056,1660,29,36,11.06
+2,Transaction Success = Yes AND CVV Used = Yes AND First Time at This Merchant = Y,0.1923,0.1389,26,5,36,121.69
+3,Issuing Bank Fraud Propensity <= 0.01 AND Merchant Fraud Propensity > 0.01 AND T,0.1591,0.1944,44,7,36,100.67
+4,Issuing Bank Fraud Propensity <= 0.00 AND Merchant Fraud Propensity > 0.01 AND T,0.1591,0.1944,44,7,36,100.67
+5,Issuing Bank Fraud Propensity <= 0.01 AND Merchant Fraud Propensity > 0.01,0.0972,0.1944,72,7,36,61.52
+6,Issuing Bank Fraud Propensity > 0.02 AND Transaction Success = Yes AND Merchant ,0.0719,0.2778,139,10,36,45.53
+7,Issuing Bank Fraud Propensity > 0.02 AND Transaction Success = Yes AND Issuing B,0.055,0.3333,218,12,36,34.83
+8,Issuing Bank Fraud Propensity > 0.01 AND Transaction Success = Yes AND Merchant ,0.0432,0.3889,324,14,36,27.34
+9,Issuing Bank Fraud Propensity > 0.02 AND Transaction Success = Yes,0.0417,0.3889,336,14,36,26.37
+10,Issuing Bank Fraud Propensity > 0.01 AND Transaction Success = Yes AND Issuing B,0.0351,0.4722,485,17,36,22.18
+11,Issuing Bank Fraud Propensity > 0.01 AND Transaction Success = Yes AND Merchant ,0.0237,0.4722,717,17,36,15.0
+12,Issuing Bank Fraud Propensity > 0.01 AND Transaction Success = Yes,0.0223,0.4722,764,17,36,14.08
+13,Issuing Bank Fraud Propensity > 0.01 AND Transaction Success = Yes AND Issuing B,0.0223,0.4722,764,17,36,14.08
+14,Issuing Bank Fraud Propensity > 0.00 AND Transaction Success = Yes AND Merchant ,0.0132,0.8333,2275,30,36,8.34
+15,Merchant Fraud Propensity > 0.00 AND Transaction Success = Yes AND Issuing Bank ,0.0127,0.8611,2438,31,36,8.05

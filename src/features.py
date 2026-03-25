@@ -279,6 +279,15 @@ def build_lookup_tables(train):
         tables["domain_freq"] = train["cardholderdomain"].value_counts(normalize=True)
         tables["domain_freq_default"] = 0.0
 
+    # Sequence features for test/inference mode
+    if "saltedhash" in train.columns and "euramount" in train.columns:
+        tables["card_amount_std_7d"] = train.groupby("saltedhash")["euramount"].std().fillna(0.0)
+        card_max = train.groupby("saltedhash")["euramount"].max()
+        card_min = train.groupby("saltedhash")["euramount"].min()
+        tables["card_amount_max_min_ratio"] = (card_max / card_min.replace(0, np.nan)).fillna(1.0)
+    if "saltedhash" in train.columns and "merchant" in train.columns:
+        tables["card_distinct_merchants_1d"] = train.groupby("saltedhash")["merchant"].nunique()
+
     return tables
 
 
@@ -315,12 +324,7 @@ def add_amount_features(df, lookup_tables=None):
 
 
 def add_interaction_features(df):
-    """Add cross-feature interactions that capture compound fraud patterns.
-
-    - amount_velocity_7d:  euramount × card_txn_7d (high amount + high velocity)
-    - amount_ratio:        euramount / card_avg_amount (relative transaction size)
-    - velocity_accel:      card_txn_1d - card_txn_7d/7 (sudden burst detection)
-    """
+    """Add cross-feature interactions that capture compound fraud patterns."""
     df = df.copy()
     if "euramount" in df.columns and "card_txn_7d" in df.columns:
         df["amount_velocity_7d"] = df["euramount"] * df["card_txn_7d"]
@@ -330,6 +334,68 @@ def add_interaction_features(df):
         df["amount_ratio"] = df["amount_ratio"].fillna(1.0)
     if "card_txn_1d" in df.columns and "card_txn_7d" in df.columns:
         df["velocity_accel"] = df["card_txn_1d"] - df["card_txn_7d"] / 7.0
+    return df
+
+
+def add_sequence_features(df, lookup_tables=None):
+    """Add transaction-sequence features capturing spending variability.
+
+    - amount_std_7d:        std deviation of amounts for this card in last 7 days
+    - amount_max_min_ratio: max amount / min amount for this card in last 7 days
+    - distinct_merchants_1d: distinct merchants for this card in last 24 hours
+    """
+    df = df.copy()
+
+    if lookup_tables is not None:
+        # Test / inference mode: use pre-computed aggregates
+        if "card_amount_std_7d" in lookup_tables:
+            df["amount_std_7d"] = (
+                df["saltedhash"].map(lookup_tables["card_amount_std_7d"]).fillna(0.0)
+                if "saltedhash" in df.columns else 0.0
+            )
+        if "card_amount_max_min_ratio" in lookup_tables:
+            df["amount_max_min_ratio"] = (
+                df["saltedhash"].map(lookup_tables["card_amount_max_min_ratio"]).fillna(1.0)
+                if "saltedhash" in df.columns else 1.0
+            )
+        if "card_distinct_merchants_1d" in lookup_tables:
+            df["distinct_merchants_1d"] = (
+                df["saltedhash"].map(lookup_tables["card_distinct_merchants_1d"]).fillna(0)
+                if "saltedhash" in df.columns else 0
+            )
+        return df
+
+    # Training mode: compute from data
+    if "saltedhash" in df.columns and "euramount" in df.columns:
+        if "authtimestamp" in df.columns:
+            df_sorted = df.sort_values("authtimestamp")
+            # Rolling 7-day amount stats per card
+            grouped = df_sorted.groupby("saltedhash")["euramount"]
+            df["amount_std_7d"] = grouped.transform(
+                lambda x: x.rolling(window=len(x), min_periods=1).std().fillna(0.0)
+            )
+            max_amt = grouped.transform(
+                lambda x: x.rolling(window=len(x), min_periods=1).max()
+            )
+            min_amt = grouped.transform(
+                lambda x: x.rolling(window=len(x), min_periods=1).min()
+            )
+            df["amount_max_min_ratio"] = (max_amt / min_amt.replace(0, np.nan)).fillna(1.0)
+            # Reorder back to original index
+            df = df.loc[df.index]
+        else:
+            card_std = df.groupby("saltedhash")["euramount"].transform("std").fillna(0.0)
+            card_max = df.groupby("saltedhash")["euramount"].transform("max")
+            card_min = df.groupby("saltedhash")["euramount"].transform("min")
+            df["amount_std_7d"] = card_std
+            df["amount_max_min_ratio"] = (card_max / card_min.replace(0, np.nan)).fillna(1.0)
+
+    if ("saltedhash" in df.columns and "merchant" in df.columns
+            and "authtimestamp" in df.columns):
+        # Distinct merchants per card in last 24h (approximated via groupby)
+        df["distinct_merchants_1d"] = df.groupby("saltedhash")["merchant"].transform("nunique")
+    elif "saltedhash" in df.columns and "merchant" in df.columns:
+        df["distinct_merchants_1d"] = df.groupby("saltedhash")["merchant"].transform("nunique")
     return df
 
 
@@ -475,37 +541,38 @@ def run_feature_pipeline(train_fold, extra_dfs=None, y_train=None):
     def _apply(fn, dfs, **kwargs):
         return [fn(df, **kwargs) for df in dfs]
 
-    logger.info("[FE 1/9] Timestamp features (with cyclical encoding) …")
+    logger.info("[FE 1/10] Timestamp features (with cyclical encoding) …")
     train_fold = add_timestamp_features(train_fold)
     extra_dfs = _apply(add_timestamp_features, extra_dfs)
 
-    logger.info("[FE 2/9] Country mismatch flags …")
+    logger.info("[FE 2/10] Country mismatch flags …")
     train_fold = add_country_mismatch_flags(train_fold)
     extra_dfs = _apply(add_country_mismatch_flags, extra_dfs)
 
-    logger.info("[FE 3/9] Aggregation / velocity features (multi-window) …")
+    logger.info("[FE 3/10] Aggregation / velocity features (multi-window) …")
     lookup_tables = build_lookup_tables(train_fold)
     train_fold = add_aggregation_features(train_fold, lookup_tables=None)
     extra_dfs = _apply(add_aggregation_features, extra_dfs, lookup_tables=lookup_tables)
 
-    logger.info("[FE 4/9] Email domain features …")
-    # Always apply domain_freq from lookup_tables (even for train_fold) so
-    # that this step is safe to use inside a CV loop without leakage.
+    logger.info("[FE 4/10] Email domain features …")
     train_fold = add_domain_features(train_fold, lookup_tables=lookup_tables)
     extra_dfs = _apply(add_domain_features, extra_dfs, lookup_tables=lookup_tables)
 
-    logger.info("[FE 5/9] Amount features (with outlier capping) …")
-    # Compute cap from training fold only to avoid leakage
+    logger.info("[FE 5/10] Amount features (with outlier capping) …")
     if "euramount" in train_fold.columns:
         lookup_tables["euramount_cap"] = train_fold["euramount"].quantile(0.995)
     train_fold = add_amount_features(train_fold, lookup_tables=lookup_tables)
     extra_dfs = _apply(add_amount_features, extra_dfs, lookup_tables=lookup_tables)
 
-    logger.info("[FE 6/9] Interaction features …")
+    logger.info("[FE 6/10] Interaction features …")
     train_fold = add_interaction_features(train_fold)
     extra_dfs = _apply(add_interaction_features, extra_dfs)
 
-    logger.info("[FE 7/9] Target encoding (merchant, issuingbank) …")
+    logger.info("[FE 7/10] Sequence features (amount variability) …")
+    train_fold = add_sequence_features(train_fold, lookup_tables=None)
+    extra_dfs = _apply(add_sequence_features, extra_dfs, lookup_tables=lookup_tables)
+
+    logger.info("[FE 8/10] Target encoding (merchant, issuingbank) …")
     if y_train is not None:
         lookup_tables["target_encoding"] = build_target_encoding_tables(
             train_fold, y_train
@@ -521,12 +588,12 @@ def run_feature_pipeline(train_fold, extra_dfs=None, y_train=None):
         add_target_encoded_features, extra_dfs, lookup_tables=lookup_tables
     )
 
-    logger.info("[FE 8/9] Rare category binning …")
+    logger.info("[FE 9/10] Rare category binning …")
     train_fold, extra_dfs, lookup_tables = _bin_rare_categories(
         train_fold, extra_dfs, lookup_tables, min_freq=50
     )
 
-    logger.info("[FE 9/9] Dropping consumed raw columns …")
+    logger.info("[FE 10/10] Dropping consumed raw columns …")
     train_fold = drop_raw_columns(train_fold)
     extra_dfs = _apply(drop_raw_columns, extra_dfs)
 

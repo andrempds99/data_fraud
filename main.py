@@ -58,6 +58,7 @@ from src.model import (
     build_stacking_ensemble,
     calibrate_model,
     train_with_smote,
+    train_with_undersampling,
     build_baseline_xgboost,
     build_preprocessor,
 )
@@ -227,34 +228,51 @@ def main():
     recall_summary.to_csv(recall_path, index=False)
     logger.info("Recall summary saved to %s", recall_path)
 
-    # ── 6c. SMOTE resampling comparison ───────────────────────────────────
+    # ── 6c. Resampling comparison (SMOTE + Undersampling on all models) ────
     logger.info("=" * 60)
-    logger.info("  STEP 6c: SMOTE RESAMPLING COMPARISON")
+    logger.info("  STEP 6c: RESAMPLING COMPARISON (ALL MODELS)")
     logger.info("=" * 60)
-    smote_model = train_with_smote(
-        models[best_model_name], X_train_fe, y_tr, best_model_name
-    )
-    smote_prob = smote_model.predict_proba(X_val_fe)[:, 1]
-    smote_pr_auc = average_precision_score(y_val, smote_prob)
-    logger.info("  %s (class weights) PR-AUC: %.4f", best_model_name, best_pr_auc)
-    logger.info("  %s (SMOTE)         PR-AUC: %.4f", best_model_name, smote_pr_auc)
-    if smote_pr_auc > best_pr_auc:
-        logger.info("  \u2192 SMOTE improves performance; switching to SMOTE-trained model.")
-        best_model_name_final = best_model_name + "_SMOTE"
-        best_pr_auc = smote_pr_auc
-        smote_wins = True
-    else:
-        logger.info("  \u2192 Class weights outperform SMOTE; keeping original model.")
-        best_model_name_final = best_model_name
-        smote_wins = False
+    smote_wins = False
+    for name, model in models.items():
+        if not hasattr(model, "named_steps"):
+            continue
+        base_prob = model.predict_proba(X_val_fe)[:, 1]
+        base_pr = average_precision_score(y_val, base_prob)
+
+        smote_m = train_with_smote(model, X_train_fe, y_tr, name)
+        smote_prob = smote_m.predict_proba(X_val_fe)[:, 1]
+        smote_pr = average_precision_score(y_val, smote_prob)
+
+        under_m = train_with_undersampling(model, X_train_fe, y_tr, name)
+        under_prob = under_m.predict_proba(X_val_fe)[:, 1]
+        under_pr = average_precision_score(y_val, under_prob)
+
+        logger.info("  %-20s  base=%.4f  SMOTE=%.4f  undersample=%.4f",
+                     name, base_pr, smote_pr, under_pr)
+
+        best_variant_pr = max(base_pr, smote_pr, under_pr)
+        if best_variant_pr > best_pr_auc:
+            if smote_pr == best_variant_pr:
+                best_pr_auc = smote_pr
+                best_model_name = name
+                models[name] = smote_m
+                smote_wins = True
+                logger.info("  → %s SMOTE improves PR-AUC to %.4f", name, smote_pr)
+            elif under_pr == best_variant_pr:
+                best_pr_auc = under_pr
+                best_model_name = name
+                models[name] = under_m
+                smote_wins = True
+                logger.info("  → %s Undersampling improves PR-AUC to %.4f", name, under_pr)
+
+    if not smote_wins:
+        logger.info("  → Class weights outperform resampling; keeping original models.")
 
     # ── 7. Best model selection ──────────────────────────────────────────
     logger.info("=" * 60)
     logger.info("  BEST MODEL: %s  (PR-AUC = %.4f)", best_model_name, best_pr_auc)
     logger.info("=" * 60)
-    if smote_wins:
-        best_model = smote_model
-    elif best_model_name == "Stacking":
+    if best_model_name == "Stacking":
         best_model = stacking_model
     else:
         best_model = models[best_model_name]
@@ -333,13 +351,20 @@ def main():
     plot_shap_dependence(best_model, X_val_fe, name=best_model_name)
 
     # ── 7d. Probability calibration ──────────────────────────────────────
+    # Split validation into calibration (first 50%) and evaluation (last 50%)
+    # so the calibration model never sees the data it's evaluated on.
     logger.info("=" * 60)
     logger.info("  STEP 7d: PROBABILITY CALIBRATION")
     logger.info("=" * 60)
-    y_prob_before_cal = best_model.predict_proba(X_val_fe)[:, 1]
-    best_model = calibrate_model(best_model, X_val_fe, y_val, method="isotonic")
-    y_prob_after_cal = best_model.predict_proba(X_val_fe)[:, 1]
-    plot_calibration_curve(y_val, y_prob_before_cal, y_prob_after_cal, name=best_model_name)
+    cal_split = len(X_val_fe) // 2
+    X_cal, X_eval = X_val_fe.iloc[:cal_split], X_val_fe.iloc[cal_split:]
+    y_cal, y_eval = y_val.iloc[:cal_split], y_val.iloc[cal_split:]
+    logger.info("  Calibration split: Cal=%d  Eval=%d", len(X_cal), len(X_eval))
+
+    y_prob_before_cal = best_model.predict_proba(X_eval)[:, 1]
+    best_model = calibrate_model(best_model, X_cal, y_cal, method="isotonic")
+    y_prob_after_cal = best_model.predict_proba(X_eval)[:, 1]
+    plot_calibration_curve(y_eval, y_prob_before_cal, y_prob_after_cal, name=best_model_name)
 
     # ── 8. Serialise best model + lookup tables ───────────────────────────
     model_path  = os.path.join(OUTPUT_DIR, "best_model.joblib")

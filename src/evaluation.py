@@ -17,7 +17,7 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
 )
-from sklearn.model_selection import learning_curve, StratifiedKFold, TimeSeriesSplit
+from sklearn.model_selection import learning_curve, TimeSeriesSplit
 
 from src.config import OUTPUT_DIR, TARGET_RECALLS, SEED
 

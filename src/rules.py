@@ -75,6 +75,9 @@ FEATURE_DISPLAY_NAMES: dict = {
     "velocity_accel":                      "Velocity Acceleration (burst)",
     "merchant_te":                         "Merchant Fraud Propensity",
     "issuingbank_te":                      "Issuing Bank Fraud Propensity",
+    "amount_std_7d":                       "Amount Std Dev (card history)",
+    "amount_max_min_ratio":                "Amount Max/Min Ratio (card)",
+    "distinct_merchants_1d":               "Distinct Merchants (recent)",
 }
 
 # Features whose values are 0/1 flags — thresholds shown as integers
@@ -246,16 +249,14 @@ def extract_surrogate_rules(
     threshold: float,
     depths: list | None = None,
     min_samples_leaf: int = 30,
+    exclude_features: list | None = None,
 ) -> tuple:
     """Multi-depth surrogate sweep with both model-score and true-label targets.
 
-    For each depth, two surrogates are fitted:
-      (a) **Model-score surrogate**: pseudo-labels = (predict_proba >= threshold)
-      (b) **True-label surrogate**: labels = y_train (captures ground-truth patterns)
-
-    Returns
-    -------
-    (all_rules, best_surrogate, numeric_cols)
+    Parameters
+    ----------
+    exclude_features : list of column names to drop before building the
+                       surrogate tree (e.g. target-encoded columns).
     """
     if depths is None:
         depths = [3, 4, 5, 6]
@@ -266,6 +267,13 @@ def extract_surrogate_rules(
         "    Pseudo-labels: %.2f%% positive (threshold=%.4f)",
         pseudo_labels.mean() * 100, threshold,
     )
+
+    X_input = X_train
+    if exclude_features:
+        cols_to_drop = [c for c in exclude_features if c in X_train.columns]
+        if cols_to_drop:
+            X_input = X_train.drop(columns=cols_to_drop)
+            logger.info("    Excluding features: %s", cols_to_drop)
 
     all_rules = []
     seen_rule_texts = set()
@@ -278,7 +286,7 @@ def extract_surrogate_rules(
             ("true_label", y_train.values),
         ]:
             surrogate, num_cols = build_surrogate(
-                X_train, labels,
+                X_input, labels,
                 max_depth=depth,
                 min_samples_leaf=min_samples_leaf,
             )
@@ -824,7 +832,10 @@ def run_rule_extraction(
     best_surrogate_for_export = None
     numeric_cols = None
 
+    te_features = ["merchant_te", "issuingbank_te"]
+
     for model_name, model in models_to_extract.items():
+        # Pass 1: all features
         logger.info(
             "  Extracting surrogate rules from %s (depths=%s, threshold=%.4f) …",
             model_name, surrogate_depths, recall_threshold,
@@ -841,6 +852,19 @@ def run_rule_extraction(
         if model_name == best_model_name:
             best_surrogate_for_export = surrogate
             numeric_cols = num_cols
+
+        # Pass 2: exclude target-encoded features → behavioural rules only
+        logger.info("  Extracting behavioural rules (no TE features) from %s …", model_name)
+        rules_no_te, _, _ = extract_surrogate_rules(
+            model, X_train, y_train,
+            threshold=recall_threshold,
+            depths=surrogate_depths,
+            exclude_features=te_features,
+        )
+        for conditions, metadata in rules_no_te:
+            metadata["model"] = model_name
+            metadata["source"] = metadata.get("source", "") + "_no_te"
+        all_candidate_rules.extend(rules_no_te)
 
     logger.info(
         "  Total candidate rules across all models: %d",

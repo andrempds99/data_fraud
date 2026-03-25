@@ -138,13 +138,14 @@ def build_lightgbm(preprocessor):
         ("classifier", lgb.LGBMClassifier(
             n_estimators=1000,
             max_depth=6,
+            num_leaves=31,
             learning_rate=0.05,
             is_unbalance=True,
             subsample=0.8,
             colsample_bytree=0.8,
             reg_alpha=0.1,
             reg_lambda=1.0,
-            metric="auc",
+            metric="binary_logloss",
             random_state=SEED,
             n_jobs=-1,
             verbose=-1,
@@ -230,11 +231,11 @@ def train_all_models(X_train, y_train, X_val=None, y_val=None):
 
 
 def build_stacking_ensemble(models, X_train, y_train, X_val=None, y_val=None):
-    """Build a stacking ensemble from pre-trained base models.
+    """Build a stacking ensemble from already-fitted base models.
 
-    Uses a LogisticRegression meta-learner on the base models' predicted
-    probabilities. ``cv='prefit'`` avoids refitting the base estimators
-    (they are already trained with early stopping etc.).
+    Uses ``cv='prefit'`` with the meta-learner trained on **validation** data
+    so that base-model predictions are out-of-sample, avoiding the leakage that
+    would occur if we used training-set predictions.
     """
     estimators = [(name, model) for name, model in models.items()]
 
@@ -249,8 +250,11 @@ def build_stacking_ensemble(models, X_train, y_train, X_val=None, y_val=None):
         n_jobs=1,
     )
 
-    logger.info("  Training Stacking Ensemble …")
-    stack.fit(X_train, y_train)
+    # Fit meta-learner on validation data (base models are already fitted).
+    fit_X = X_val if X_val is not None else X_train
+    fit_y = y_val if y_val is not None else y_train
+    logger.info("  Training Stacking Ensemble (cv=prefit, meta on val) …")
+    stack.fit(fit_X, fit_y)
     logger.info("  Stacking Ensemble trained.")
     return stack
 
@@ -273,12 +277,7 @@ def calibrate_model(model, X_val, y_val, method="isotonic"):
 # ── SMOTE resampling ──────────────────────────────────────────────────────────
 
 def train_with_smote(pipeline, X_train, y_train, name="Model"):
-    """Re-train a clone of *pipeline* using SMOTE oversampling.
-
-    SMOTE synthesises minority-class examples via k-NN interpolation so the
-    classifier trains on a balanced dataset.  Built-in class-weight /
-    scale_pos_weight parameters are disabled to avoid double-compensating.
-    """
+    """Re-train a clone of *pipeline* using SMOTE oversampling."""
     from imblearn.over_sampling import SMOTE
 
     logger.info("  Training %s with SMOTE …", name)
@@ -292,21 +291,47 @@ def train_with_smote(pipeline, X_train, y_train, name="Model"):
                 int(y_train.sum()), int(y_res.sum()))
 
     clf = clone(pipeline.named_steps["classifier"])
-    # Disable built-in class rebalancing — SMOTE handles it externally.
-    params = clf.get_params()
-    if "scale_pos_weight" in params:
-        clf.set_params(scale_pos_weight=1.0)
-    if "is_unbalance" in params:
-        clf.set_params(is_unbalance=False)
-    if "class_weight" in params:
-        clf.set_params(class_weight=None)
-    # Remove early stopping (no eval_set provided for SMOTE training).
-    if "early_stopping_rounds" in params and params["early_stopping_rounds"] is not None:
+    for param, off_val in [("scale_pos_weight", 1.0), ("is_unbalance", False),
+                           ("class_weight", None)]:
+        if param in clf.get_params():
+            clf.set_params(**{param: off_val})
+    if clf.get_params().get("early_stopping_rounds") is not None:
         clf.set_params(early_stopping_rounds=None)
 
     clf.fit(X_res, y_res)
     result = Pipeline([("preprocessor", preprocessor), ("classifier", clf)])
     logger.info("  %s (SMOTE) trained.", name)
+    return result
+
+
+def train_with_undersampling(pipeline, X_train, y_train, name="Model", ratio=0.05):
+    """Re-train a clone of *pipeline* using random undersampling.
+
+    ``ratio`` controls the target minority/majority proportion (e.g. 0.05 = 1:20).
+    """
+    from imblearn.under_sampling import RandomUnderSampler
+
+    logger.info("  Training %s with Undersampling (ratio=%.2f) …", name, ratio)
+    preprocessor = clone(pipeline.named_steps["preprocessor"])
+    X_t = preprocessor.fit_transform(X_train)
+
+    rus = RandomUnderSampler(sampling_strategy=ratio, random_state=SEED)
+    X_res, y_res = rus.fit_resample(X_t, y_train)
+    logger.info("  Undersampled: %d → %d rows  (fraud: %d, legit: %d)",
+                len(y_train), len(y_res),
+                int(y_res.sum()), int((y_res == 0).sum()))
+
+    clf = clone(pipeline.named_steps["classifier"])
+    for param, off_val in [("scale_pos_weight", 1.0), ("is_unbalance", False),
+                           ("class_weight", None)]:
+        if param in clf.get_params():
+            clf.set_params(**{param: off_val})
+    if clf.get_params().get("early_stopping_rounds") is not None:
+        clf.set_params(early_stopping_rounds=None)
+
+    clf.fit(X_res, y_res)
+    result = Pipeline([("preprocessor", preprocessor), ("classifier", clf)])
+    logger.info("  %s (Undersampled) trained.", name)
     return result
 
 
@@ -361,7 +386,7 @@ def tune_lightgbm(X_train, y_train, n_trials=50):
     num_feats = [c for c in NUMERIC_FEATURES if c in X_train.columns]
     cat_feats  = [c for c in CATEGORICAL_FEATURES if c in X_train.columns]
 
-    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=SEED)
+    cv = TimeSeriesSplit(n_splits=3)
 
     def objective(trial):
         params = {
@@ -379,8 +404,6 @@ def tune_lightgbm(X_train, y_train, n_trials=50):
             "n_jobs": -1,
             "verbose": -1,
         }
-        # Build a full Pipeline inside the objective so the preprocessor is
-        # independently fit on each CV fold's training split.
         pipe = Pipeline([
             ("preprocessor", build_preprocessor(num_feats, cat_feats)),
             ("classifier", lgb.LGBMClassifier(**params)),
@@ -423,7 +446,7 @@ def tune_xgboost(X_train, y_train, n_trials=50):
     cat_feats  = [c for c in CATEGORICAL_FEATURES if c in X_train.columns]
 
     pos_weight = (y_train == 0).sum() / max((y_train == 1).sum(), 1)
-    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=SEED)
+    cv = TimeSeriesSplit(n_splits=3)
 
     def objective(trial):
         params = {

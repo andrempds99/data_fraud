@@ -16,24 +16,24 @@
 |   |   |   |   |   |--- merchant_te >  0.00
 |   |   |   |   |   |   |--- class: 0
 |   |   |   |   |--- domain_freq >  0.00
-|   |   |   |   |   |--- hour_cos <= -0.98
+|   |   |   |   |   |--- merchant_txn_count <= 16631.50
 |   |   |   |   |   |   |--- class: 0
-|   |   |   |   |   |--- hour_cos >  -0.98
+|   |   |   |   |   |--- merchant_txn_count >  16631.50
 |   |   |   |   |   |   |--- class: 0
 |   |   |--- issuingbank_te >  0.00
 |   |   |   |--- success <= 0.50
 |   |   |   |   |--- class: 0
 |   |   |   |--- success >  0.50
-|   |   |   |   |--- hour <= 8.50
-|   |   |   |   |   |--- amount_ratio <= 1.64
+|   |   |   |   |--- merchant_te <= 0.00
+|   |   |   |   |   |--- card_txn_3d <= 12.50
 |   |   |   |   |   |   |--- class: 0
-|   |   |   |   |   |--- amount_ratio >  1.64
+|   |   |   |   |   |--- card_txn_3d >  12.50
 |   |   |   |   |   |   |--- class: 1
-|   |   |   |   |--- hour >  8.50
-|   |   |   |   |   |--- hour <= 13.50
-|   |   |   |   |   |   |--- class: 1
-|   |   |   |   |   |--- hour >  13.50
+|   |   |   |   |--- merchant_te >  0.00
+|   |   |   |   |   |--- log_euramount <= 3.26
 |   |   |   |   |   |   |--- class: 0
+|   |   |   |   |   |--- log_euramount >  3.26
+|   |   |   |   |   |   |--- class: 1
 |   |--- merchant_te >  0.01
 |   |   |--- initialrecurring <= 0.50
 |   |   |   |--- success <= 0.50
@@ -44,39 +44,36 @@
 |   |   |   |   |--- issuingbank_te >  0.00
 |   |   |   |   |   |--- class: 1
 |   |   |--- initialrecurring >  0.50
-|   |   |   |--- class: 0
+|   |   |   |--- card_txn_1d <= 0.50
+|   |   |   |   |--- class: 0
+|   |   |   |--- card_txn_1d >  0.50
+|   |   |   |   |--- class: 0
 |--- issuingbank_te >  0.01
 |   |--- initialrecurring <= 0.50
-|   |   |--- issuingbank_te <= 0.02
-|   |   |   |--- hour_sin <= 0.92
+|   |   |--- success <= 0.50
+|   |   |   |--- merchant_txn_count <= 584.00
+|   |   |   |   |--- class: 1
+|   |   |   |--- merchant_txn_count >  584.00
+|   |   |   |   |--- class: 0
+|   |   |--- success >  0.50
+|   |   |   |--- issuingbank_te <= 0.02
 |   |   |   |   |--- merchant_te <= 0.00
 |   |   |   |   |   |--- class: 0
 |   |   |   |   |--- merchant_te >  0.00
-|   |   |   |   |   |--- day <= 27.50
+|   |   |   |   |   |--- card_avg_amount <= 17.58
 |   |   |   |   |   |   |--- class: 1
-|   |   |   |   |   |--- day >  27.50
-|   |   |   |   |   |   |--- class: 0
-|   |   |   |--- hour_sin >  0.92
-|   |   |   |   |--- log_euramount <= 3.19
-|   |   |   |   |   |--- class: 0
-|   |   |   |   |--- log_euramount >  3.19
-|   |   |   |   |   |--- is_weekend <= 0.50
-|   |   |   |   |   |   |--- class: 0
-|   |   |   |   |   |--- is_weekend >  0.50
+|   |   |   |   |   |--- card_avg_amount >  17.58
 |   |   |   |   |   |   |--- class: 1
-|   |   |--- issuingbank_te >  0.02
-|   |   |   |--- merchant_te <= 0.00
-|   |   |   |   |--- class: 0
-|   |   |   |--- merchant_te >  0.00
-|   |   |   |   |--- success <= 0.50
-|   |   |   |   |   |--- euramount_capped <= 77.31
-|   |   |   |   |   |   |--- class: 0
-|   |   |   |   |   |--- euramount_capped >  77.31
-|   |   |   |   |   |   |--- class: 1
-|   |   |   |   |--- success >  0.50
+|   |   |   |--- issuingbank_te >  0.02
+|   |   |   |   |--- issuingbank_te <= 0.02
 |   |   |   |   |   |--- issuingbank_te <= 0.02
 |   |   |   |   |   |   |--- class: 1
 |   |   |   |   |   |--- issuingbank_te >  0.02
+|   |   |   |   |   |   |--- class: 0
+|   |   |   |   |--- issuingbank_te >  0.02
+|   |   |   |   |   |--- merchant_te <= 0.00
+|   |   |   |   |   |   |--- class: 1
+|   |   |   |   |   |--- merchant_te >  0.00
 |   |   |   |   |   |   |--- class: 1
 |   |--- initialrecurring >  0.50
 |   |   |--- merchant_te <= 0.01
