@@ -314,6 +314,90 @@ def add_amount_features(df, lookup_tables=None):
     return df
 
 
+def add_interaction_features(df):
+    """Add cross-feature interactions that capture compound fraud patterns.
+
+    - amount_velocity_7d:  euramount × card_txn_7d (high amount + high velocity)
+    - amount_ratio:        euramount / card_avg_amount (relative transaction size)
+    - velocity_accel:      card_txn_1d - card_txn_7d/7 (sudden burst detection)
+    """
+    df = df.copy()
+    if "euramount" in df.columns and "card_txn_7d" in df.columns:
+        df["amount_velocity_7d"] = df["euramount"] * df["card_txn_7d"]
+    if "euramount" in df.columns and "card_avg_amount" in df.columns:
+        avg = df["card_avg_amount"].replace(0, np.nan)
+        df["amount_ratio"] = df["euramount"] / avg
+        df["amount_ratio"] = df["amount_ratio"].fillna(1.0)
+    if "card_txn_1d" in df.columns and "card_txn_7d" in df.columns:
+        df["velocity_accel"] = df["card_txn_1d"] - df["card_txn_7d"] / 7.0
+    return df
+
+
+def add_target_encoded_features(df, y=None, lookup_tables=None, smoothing=20):
+    """Leave-one-out target encoding for high-cardinality columns.
+
+    Training mode (y provided, lookup_tables=None):
+      Uses leave-one-out to avoid leaking each row's own label:
+        encoded_i = (sum_target - y_i) / (count - 1) smoothed with global mean.
+
+    Test mode (lookup_tables provided):
+      Applies pre-computed per-category means from training.
+    """
+    df = df.copy()
+    target_encode_cols = ["merchant", "issuingbank"]
+    existing_cols = [c for c in target_encode_cols if c in df.columns]
+    if not existing_cols:
+        return df
+
+    if lookup_tables is not None and "target_encoding" in lookup_tables:
+        # Test / inference mode
+        te_maps = lookup_tables["target_encoding"]
+        for col in existing_cols:
+            col_name = f"{col}_te"
+            if col in te_maps:
+                global_mean = te_maps[f"{col}_global_mean"]
+                df[col_name] = df[col].map(te_maps[col]).fillna(global_mean)
+            else:
+                df[col_name] = 0.0
+    elif y is not None:
+        # Training mode — leave-one-out with smoothing
+        global_mean = y.mean()
+        for col in existing_cols:
+            col_name = f"{col}_te"
+            category_stats = pd.DataFrame({"val": df[col], "target": y.values})
+            agg = category_stats.groupby("val")["target"].agg(["sum", "count"])
+            # Leave-one-out: for each row, subtract its own target value
+            cat_sum = df[col].map(agg["sum"])
+            cat_count = df[col].map(agg["count"])
+            loo_mean = (cat_sum - y.values) / (cat_count - 1).clip(lower=1)
+            # Smoothing: blend per-category estimate with global mean
+            smooth_weight = cat_count / (cat_count + smoothing)
+            df[col_name] = smooth_weight * loo_mean + (1 - smooth_weight) * global_mean
+            df[col_name] = df[col_name].fillna(global_mean)
+    return df
+
+
+def build_target_encoding_tables(train, y):
+    """Compute target encoding lookup tables from training set."""
+    te_maps = {}
+    target_encode_cols = ["merchant", "issuingbank"]
+    existing = [c for c in target_encode_cols if c in train.columns]
+    global_mean = y.mean()
+    smoothing = 20
+
+    for col in existing:
+        agg = pd.DataFrame({"val": train[col], "target": y.values})
+        stats = agg.groupby("val")["target"].agg(["mean", "count"])
+        # Smoothed category mean
+        smooth = (stats["count"] * stats["mean"] + smoothing * global_mean) / (
+            stats["count"] + smoothing
+        )
+        te_maps[col] = smooth.to_dict()
+        te_maps[f"{col}_global_mean"] = global_mean
+
+    return te_maps
+
+
 def drop_raw_columns(df):
     """Drop columns that have been consumed by feature engineering."""
     to_drop = [
@@ -369,7 +453,7 @@ def _bin_rare_categories(train_fold, extra_dfs, lookup_tables, min_freq=50):
 
 # ── Full pipeline ──────────────────────────────────────────────────────────────
 
-def run_feature_pipeline(train_fold, extra_dfs=None):
+def run_feature_pipeline(train_fold, extra_dfs=None, y_train=None):
     """Apply all feature engineering to train_fold, then to each df in extra_dfs.
 
     Lookup tables are built from ``train_fold`` only — this prevents aggregation
@@ -378,6 +462,7 @@ def run_feature_pipeline(train_fold, extra_dfs=None):
     Args:
         train_fold:  the training split DataFrame (post quality pipeline)
         extra_dfs:   list of additional DataFrames (e.g. [X_val, test]), or None
+        y_train:     training labels (needed for target encoding); optional
 
     Returns:
         train_fold_fe:  engineered training DataFrame
@@ -390,38 +475,58 @@ def run_feature_pipeline(train_fold, extra_dfs=None):
     def _apply(fn, dfs, **kwargs):
         return [fn(df, **kwargs) for df in dfs]
 
-    logger.info("[FE 1/7] Timestamp features (with cyclical encoding) …")
+    logger.info("[FE 1/9] Timestamp features (with cyclical encoding) …")
     train_fold = add_timestamp_features(train_fold)
     extra_dfs = _apply(add_timestamp_features, extra_dfs)
 
-    logger.info("[FE 2/7] Country mismatch flags …")
+    logger.info("[FE 2/9] Country mismatch flags …")
     train_fold = add_country_mismatch_flags(train_fold)
     extra_dfs = _apply(add_country_mismatch_flags, extra_dfs)
 
-    logger.info("[FE 3/7] Aggregation / velocity features (multi-window) …")
+    logger.info("[FE 3/9] Aggregation / velocity features (multi-window) …")
     lookup_tables = build_lookup_tables(train_fold)
     train_fold = add_aggregation_features(train_fold, lookup_tables=None)
     extra_dfs = _apply(add_aggregation_features, extra_dfs, lookup_tables=lookup_tables)
 
-    logger.info("[FE 4/7] Email domain features …")
+    logger.info("[FE 4/9] Email domain features …")
     # Always apply domain_freq from lookup_tables (even for train_fold) so
     # that this step is safe to use inside a CV loop without leakage.
     train_fold = add_domain_features(train_fold, lookup_tables=lookup_tables)
     extra_dfs = _apply(add_domain_features, extra_dfs, lookup_tables=lookup_tables)
 
-    logger.info("[FE 5/7] Amount features (with outlier capping) …")
+    logger.info("[FE 5/9] Amount features (with outlier capping) …")
     # Compute cap from training fold only to avoid leakage
     if "euramount" in train_fold.columns:
         lookup_tables["euramount_cap"] = train_fold["euramount"].quantile(0.995)
     train_fold = add_amount_features(train_fold, lookup_tables=lookup_tables)
     extra_dfs = _apply(add_amount_features, extra_dfs, lookup_tables=lookup_tables)
 
-    logger.info("[FE 6/7] Rare category binning …")
+    logger.info("[FE 6/9] Interaction features …")
+    train_fold = add_interaction_features(train_fold)
+    extra_dfs = _apply(add_interaction_features, extra_dfs)
+
+    logger.info("[FE 7/9] Target encoding (merchant, issuingbank) …")
+    if y_train is not None:
+        lookup_tables["target_encoding"] = build_target_encoding_tables(
+            train_fold, y_train
+        )
+        train_fold = add_target_encoded_features(
+            train_fold, y=y_train, lookup_tables=None
+        )
+    else:
+        train_fold = add_target_encoded_features(
+            train_fold, lookup_tables=lookup_tables
+        )
+    extra_dfs = _apply(
+        add_target_encoded_features, extra_dfs, lookup_tables=lookup_tables
+    )
+
+    logger.info("[FE 8/9] Rare category binning …")
     train_fold, extra_dfs, lookup_tables = _bin_rare_categories(
         train_fold, extra_dfs, lookup_tables, min_freq=50
     )
 
-    logger.info("[FE 7/7] Dropping consumed raw columns …")
+    logger.info("[FE 9/9] Dropping consumed raw columns …")
     train_fold = drop_raw_columns(train_fold)
     extra_dfs = _apply(drop_raw_columns, extra_dfs)
 

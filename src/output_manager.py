@@ -10,6 +10,9 @@ ROOT_FILE_TARGETS = {
     "recall_summary.csv": "reports",
     "rules_summary.csv": "reports",
     "rules_combined_coverage.csv": "reports",
+    "rules_greedy_coverage.csv": "reports",
+    "fbeta_thresholds.csv": "reports",
+    "cost_analysis.csv": "reports",
     "test_predictions.csv": "reports",
 }
 
@@ -19,6 +22,7 @@ PLOT_FILE_TARGETS = {
     "shap_": "plots/explainability",
     "rules_": "plots/rules",
     "overfit_": "plots/overfitting",
+    "calibration_": "plots/explainability",
 }
 
 

@@ -583,3 +583,139 @@ def plot_shap_dependence(model, X_val, name="Model", top_n=6):
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info("  Saved %s", path)
+
+
+# ── F-beta threshold optimisation ─────────────────────────────────────────────
+
+def optimize_threshold_fbeta(y_true, y_prob, betas=None):
+    """Find the threshold maximising F_beta for multiple beta values.
+
+    Beta > 1 weights recall more (e.g. beta=2: recall twice as important).
+    Beta < 1 weights precision more (e.g. beta=0.5).
+
+    Returns a DataFrame with one row per beta: optimal threshold, precision,
+    recall, and F_beta.
+    """
+    if betas is None:
+        betas = [0.5, 1.0, 2.0]
+
+    precisions, recalls, thresholds = precision_recall_curve(y_true, y_prob)
+    # precision_recall_curve returns one extra element in precision/recall
+    precisions = precisions[:-1]
+    recalls = recalls[:-1]
+
+    rows = []
+    for beta in betas:
+        beta_sq = beta ** 2
+        denom = beta_sq * precisions + recalls
+        fbeta = np.where(denom > 0, (1 + beta_sq) * precisions * recalls / denom, 0.0)
+        best_idx = np.argmax(fbeta)
+        thr = thresholds[best_idx]
+        y_pred = (y_prob >= thr).astype(int)
+        rows.append({
+            "beta":      beta,
+            "threshold": round(float(thr), 6),
+            "precision": round(precision_score(y_true, y_pred, zero_division=0.0), 4),
+            "recall":    round(recall_score(y_true, y_pred, zero_division=0.0), 4),
+            "f_beta":    round(float(fbeta[best_idx]), 4),
+        })
+
+    df = pd.DataFrame(rows)
+    logger.info("  F-beta optimisation:\n%s", df.to_string(index=False))
+    return df
+
+
+# ── Calibration diagnostics ──────────────────────────────────────────────────
+
+def plot_calibration_curve(y_true, y_prob_before, y_prob_after, name="Model"):
+    """Reliability diagram + Brier score before/after probability calibration."""
+    from sklearn.calibration import calibration_curve
+    from sklearn.metrics import brier_score_loss
+
+    _ensure_output_dir()
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+    for label, probs, color in [
+        ("Before calibration", y_prob_before, "tab:red"),
+        ("After calibration",  y_prob_after,  "tab:blue"),
+    ]:
+        brier = brier_score_loss(y_true, probs)
+        try:
+            prob_true, prob_pred = calibration_curve(y_true, probs, n_bins=10, strategy="uniform")
+        except ValueError:
+            continue
+        ax1.plot(prob_pred, prob_true, "s-", color=color,
+                 label=f"{label}  (Brier={brier:.4f})")
+
+    ax1.plot([0, 1], [0, 1], "k--", label="Perfectly calibrated")
+    ax1.set_xlabel("Mean predicted probability")
+    ax1.set_ylabel("Fraction of positives")
+    ax1.set_title(f"Reliability Diagram — {name}")
+    ax1.legend(fontsize=8)
+    ax1.set_xlim([0, 1])
+    ax1.set_ylim([0, 1])
+
+    # Histogram of predicted probabilities
+    ax2.hist(y_prob_before, bins=50, alpha=0.5, label="Before", color="tab:red")
+    ax2.hist(y_prob_after,  bins=50, alpha=0.5, label="After",  color="tab:blue")
+    ax2.set_xlabel("Predicted probability")
+    ax2.set_ylabel("Count")
+    ax2.set_title(f"Prediction Distribution — {name}")
+    ax2.legend()
+    ax2.set_yscale("log")
+
+    plt.tight_layout()
+    path = os.path.join(OUTPUT_DIR, f"calibration_{name}.png")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("  Saved %s", path)
+
+
+# ── Cost-sensitive evaluation ─────────────────────────────────────────────────
+
+def compute_expected_cost(
+    y_true,
+    y_prob,
+    cost_fn: float = 100.0,
+    cost_fp: float = 1.0,
+    thresholds=None,
+) -> pd.DataFrame:
+    """Compute expected cost at various thresholds using a cost matrix.
+
+    Parameters
+    ----------
+    cost_fn : float — cost of a false negative (missed fraud). Default 100.
+    cost_fp : float — cost of a false positive (false alert). Default 1.
+    thresholds : optional array of thresholds; if None, uses linspace(0.01,0.99,50).
+
+    Returns a DataFrame with threshold, expected cost, FP count, FN count, and
+    the optimal threshold minimising total cost.
+    """
+    if thresholds is None:
+        thresholds = np.linspace(0.01, 0.99, 50)
+
+    rows = []
+    for thr in thresholds:
+        y_pred = (y_prob >= thr).astype(int)
+        tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+        total_cost = fn * cost_fn + fp * cost_fp
+        rows.append({
+            "threshold":  round(float(thr), 4),
+            "total_cost": total_cost,
+            "fp":         int(fp),
+            "fn":         int(fn),
+            "tp":         int(tp),
+            "tn":         int(tn),
+        })
+
+    df = pd.DataFrame(rows)
+    best_row = df.loc[df["total_cost"].idxmin()]
+    logger.info(
+        "  Cost analysis (FN=$%.0f, FP=$%.0f): optimal threshold=%.4f  "
+        "total cost=$%.0f  (FN=%d, FP=%d)",
+        cost_fn, cost_fp,
+        best_row["threshold"], best_row["total_cost"],
+        best_row["fn"], best_row["fp"],
+    )
+    return df

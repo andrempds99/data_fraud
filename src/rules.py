@@ -70,6 +70,11 @@ FEATURE_DISPLAY_NAMES: dict = {
     "cardholder_disposabledomain_boolean": "Disposable Email Domain",
     "card_merchant_first":                 "First Time at This Merchant",
     "card_unique_merchants":               "Unique Merchants (card lifetime)",
+    "amount_velocity_7d":                  "Amount × Velocity (7 days)",
+    "amount_ratio":                        "Amount / Card Average Ratio",
+    "velocity_accel":                      "Velocity Acceleration (burst)",
+    "merchant_te":                         "Merchant Fraud Propensity",
+    "issuingbank_te":                      "Issuing Bank Fraud Propensity",
 }
 
 # Features whose values are 0/1 flags — thresholds shown as integers
@@ -111,7 +116,9 @@ def _format_condition(feat: str, op: str, val: float) -> str:
             return f"{label} = No"
         if op == ">" and val < 0.5:
             return f"{label} = Yes"
-    if val == int(val) and abs(val) < 1e6:
+    if not (np.isfinite(val)):
+        formatted = f"{val}"
+    elif val == int(val) and abs(val) < 1e6:
         formatted = str(int(val))
     else:
         formatted = f"{val:.2f}"
@@ -369,6 +376,197 @@ def evaluate_rules(rules: list, X: pd.DataFrame, y: pd.Series) -> pd.DataFrame:
         .reset_index(drop=True)
     )
     return df
+
+
+def _deduplicate_by_jaccard(
+    rules_df: pd.DataFrame,
+    rules: list,
+    X: pd.DataFrame,
+    threshold: float = 0.90,
+) -> pd.DataFrame:
+    """Remove semantically duplicate rules using Jaccard similarity on fire-masks.
+
+    Two rules that flag >90% the same transactions are considered duplicates;
+    the one with lower lift is dropped.  This produces a cleaner rule set than
+    text-based deduplication alone.
+    """
+    rule_text_to_conditions = {}
+    for conditions, _ in rules:
+        text = _conditions_to_text(conditions)
+        if text not in rule_text_to_conditions:
+            rule_text_to_conditions[text] = conditions
+
+    masks = []
+    for _, row in rules_df.iterrows():
+        conditions = rule_text_to_conditions.get(row["rule"])
+        if conditions is not None:
+            masks.append(_apply_rule(conditions, X).values)
+        else:
+            masks.append(np.zeros(len(X), dtype=bool))
+
+    keep = np.ones(len(rules_df), dtype=bool)
+    for i in range(len(masks)):
+        if not keep[i]:
+            continue
+        for j in range(i + 1, len(masks)):
+            if not keep[j]:
+                continue
+            intersection = np.sum(masks[i] & masks[j])
+            union = np.sum(masks[i] | masks[j])
+            if union > 0 and intersection / union >= threshold:
+                keep[j] = False
+
+    removed = int((~keep).sum())
+    if removed > 0:
+        logger.info("    Jaccard dedup removed %d near-duplicate rule(s) (threshold=%.0f%%).",
+                     removed, threshold * 100)
+    return rules_df[keep].reset_index(drop=True)
+
+
+def select_rules_greedy(
+    rules: list,
+    rules_df: pd.DataFrame,
+    X: pd.DataFrame,
+    y: pd.Series,
+    max_rules: int = 15,
+) -> pd.DataFrame:
+    """Greedy set-cover rule selection: maximise marginal fraud recall per rule.
+
+    At each step the rule that catches the most *uncovered* fraud is selected,
+    producing a minimal rule set for a given recall target — unlike top-N by
+    lift which can select highly overlapping rules.
+
+    Returns a DataFrame similar to ``evaluate_combined_rules`` but with rules
+    ordered by marginal contribution rather than raw lift.
+    """
+    fraud_rate = y.mean()
+    n_fraud_total = int(y.sum())
+    fraud_idx = set(y[y == 1].index)
+
+    rule_text_to_conditions = {}
+    for conditions, _ in rules:
+        text = _conditions_to_text(conditions)
+        if text not in rule_text_to_conditions:
+            rule_text_to_conditions[text] = conditions
+
+    # Pre-compute fire-masks for all candidate rules
+    candidate_masks = {}
+    for _, row in rules_df.iterrows():
+        rule_text = row["rule"]
+        conditions = rule_text_to_conditions.get(rule_text)
+        if conditions is not None:
+            mask = _apply_rule(conditions, X)
+            fraud_hit = set(mask[mask].index) & fraud_idx
+            candidate_masks[rule_text] = (mask, fraud_hit)
+
+    selected_rules = []
+    covered_fraud = set()
+    combined_mask = pd.Series(False, index=X.index)
+    rows = []
+
+    for step in range(min(max_rules, len(candidate_masks))):
+        best_rule = None
+        best_marginal = -1
+        best_fraud_new = set()
+
+        for rule_text, (mask, fraud_hit) in candidate_masks.items():
+            if rule_text in selected_rules:
+                continue
+            new_fraud = fraud_hit - covered_fraud
+            if len(new_fraud) > best_marginal:
+                best_marginal = len(new_fraud)
+                best_rule = rule_text
+                best_fraud_new = new_fraud
+
+        if best_rule is None or best_marginal == 0:
+            break
+
+        selected_rules.append(best_rule)
+        covered_fraud |= best_fraud_new
+        combined_mask |= candidate_masks[best_rule][0]
+
+        n_flagged = int(combined_mask.sum())
+        n_fraud_hit = len(covered_fraud)
+        prec = n_fraud_hit / n_flagged if n_flagged > 0 else 0.0
+        rec = n_fraud_hit / n_fraud_total if n_fraud_total > 0 else 0.0
+
+        rows.append({
+            "n_rules":          step + 1,
+            "last_rule":        best_rule[:80],
+            "marginal_fraud":   best_marginal,
+            "precision":        round(prec, 4),
+            "recall":           round(rec,  4),
+            "n_flagged":        n_flagged,
+            "n_fraud_hit":      n_fraud_hit,
+            "n_fraud_total":    n_fraud_total,
+            "lift":             round(prec / fraud_rate, 2) if fraud_rate > 0 else 0.0,
+        })
+
+    return pd.DataFrame(rows)
+
+
+def evaluate_rule_stability(
+    rules: list,
+    rules_df: pd.DataFrame,
+    X: pd.DataFrame,
+    y: pd.Series,
+    n_splits: int = 3,
+    min_lift: float = 1.5,
+) -> pd.DataFrame:
+    """Evaluate rule stability across temporal windows.
+
+    Splits the validation set chronologically into ``n_splits`` folds and
+    scores each rule on every fold.  The ``stability_score`` is the fraction
+    of folds where the rule achieves lift >= ``min_lift``.  Rules that only
+    work in one time period get a low score.
+
+    Returns ``rules_df`` with added ``stability_score`` column.
+    """
+    rule_text_to_conditions = {}
+    for conditions, _ in rules:
+        text = _conditions_to_text(conditions)
+        if text not in rule_text_to_conditions:
+            rule_text_to_conditions[text] = conditions
+
+    # Split validation by position (assumes data is temporally ordered)
+    fold_size = len(X) // n_splits
+    folds = []
+    for i in range(n_splits):
+        start = i * fold_size
+        end = start + fold_size if i < n_splits - 1 else len(X)
+        idx = X.index[start:end]
+        folds.append((X.loc[idx], y.loc[idx]))
+
+    stability_scores = []
+    for _, row in rules_df.iterrows():
+        conditions = rule_text_to_conditions.get(row["rule"])
+        if conditions is None:
+            stability_scores.append(0.0)
+            continue
+        passes = 0
+        for X_fold, y_fold in folds:
+            fraud_rate_fold = y_fold.mean()
+            if fraud_rate_fold == 0:
+                continue
+            mask = _apply_rule(conditions, X_fold)
+            n_flagged = int(mask.sum())
+            if n_flagged == 0:
+                continue
+            n_fraud_hit = int((mask & (y_fold == 1)).sum())
+            prec = n_fraud_hit / n_flagged
+            lift = prec / fraud_rate_fold
+            if lift >= min_lift:
+                passes += 1
+        stability_scores.append(round(passes / max(len(folds), 1), 2))
+
+    rules_df = rules_df.copy()
+    rules_df["stability_score"] = stability_scores
+    n_stable = sum(1 for s in stability_scores if s >= 0.5)
+    logger.info(
+        "    Rule stability: %d/%d rules stable (lift ≥ %.1f in ≥50%% of folds).",
+        n_stable, len(rules_df), min_lift,
+    )
+    return rules_df
 
 
 def evaluate_combined_rules(
@@ -680,6 +878,20 @@ def run_rule_extraction(
         logger.warning("  No rules fired on the validation set.")
         return rules_df
 
+    # ── Jaccard-based semantic deduplication ──────────────────────────
+    logger.info("  Semantic deduplication (Jaccard ≥ 90%%) …")
+    rules_df = _deduplicate_by_jaccard(
+        rules_df, all_candidate_rules, X_val[eval_cols], threshold=0.90,
+    )
+
+    # ── Rule stability across temporal folds ─────────────────────────
+    logger.info("  Evaluating rule stability across temporal folds …")
+    rules_df = evaluate_rule_stability(
+        all_candidate_rules, rules_df,
+        X_val[eval_cols], y_val,
+        n_splits=3, min_lift=1.5,
+    )
+
     # ── Persist scored rules ──────────────────────────────────────────
     rules_path = os.path.join(OUTPUT_DIR, "rules_summary.csv")
     rules_df.to_csv(rules_path, index=False)
@@ -688,7 +900,10 @@ def run_rule_extraction(
         rules_path, len(rules_df),
     )
 
-    display_cols = ["rule", "precision", "recall", "n_fraud_hit", "lift", "source"]
+    display_cols = [
+        "rule", "precision", "recall", "n_fraud_hit",
+        "lift", "stability_score", "source",
+    ]
     available_cols = [c for c in display_cols if c in rules_df.columns]
     logger.info(
         "\n  Top 10 rules by lift:\n%s",
@@ -699,7 +914,7 @@ def run_rule_extraction(
     plot_rule_performance(rules_df, name=best_model_name)
     plot_rule_leaderboard(rules_df, name=best_model_name)
 
-    # ── Combined OR-coverage analysis ────────────────────────────────
+    # ── Combined OR-coverage analysis (top-N by lift) ────────────────
     combined_df = evaluate_combined_rules(
         all_candidate_rules, rules_df,
         X_val[eval_cols], y_val,
@@ -714,5 +929,22 @@ def run_rule_extraction(
             combined_df.to_string(index=False),
         )
         plot_cumulative_recall(combined_df, name=best_model_name)
+
+    # ── Greedy set-cover rule selection ───────────────────────────────
+    logger.info("  Greedy set-cover rule selection …")
+    greedy_df = select_rules_greedy(
+        all_candidate_rules, rules_df,
+        X_val[eval_cols], y_val,
+        max_rules=min(15, len(rules_df)),
+    )
+    if not greedy_df.empty:
+        greedy_path = os.path.join(OUTPUT_DIR, "rules_greedy_coverage.csv")
+        greedy_df.to_csv(greedy_path, index=False)
+        logger.info("  Greedy set-cover saved to %s", greedy_path)
+        logger.info(
+            "\n  Greedy set-cover (minimal rule set):\n%s",
+            greedy_df.to_string(index=False),
+        )
+        plot_cumulative_recall(greedy_df, name=f"{best_model_name}_greedy")
 
     return rules_df

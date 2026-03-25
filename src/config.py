@@ -80,6 +80,11 @@ NUMERIC_FEATURES = [
     "cardholder_disposabledomain_boolean",
     "card_merchant_first",   # first time this card uses this merchant
     "card_unique_merchants", # number of distinct merchants for this card
+    "amount_velocity_7d",    # euramount × card_txn_7d (compound risk signal)
+    "amount_ratio",          # euramount / card_avg_amount (relative size)
+    "velocity_accel",        # card_txn_1d - card_txn_7d/7 (burst detection)
+    "merchant_te",           # target-encoded merchant fraud propensity
+    "issuingbank_te",        # target-encoded issuing bank fraud propensity
 ]
 
 CATEGORICAL_FEATURES = [

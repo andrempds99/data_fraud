@@ -64,6 +64,7 @@ from src.model import (
 from src.evaluation import (
     evaluate_model,
     find_recall_thresholds,
+    optimize_threshold_fbeta,
     plot_learning_curves,
     plot_roc_comparison,
     plot_pr_comparison,
@@ -71,6 +72,8 @@ from src.evaluation import (
     plot_shap_summary,
     plot_shap_dependence,
     plot_overfit_comparison,
+    plot_calibration_curve,
+    compute_expected_cost,
 )
 from src.rules import run_rule_extraction
 from src.output_manager import reset_output_dir, organize_output_dir
@@ -120,7 +123,7 @@ def main():
     logger.info("  STEP 4: FEATURE ENGINEERING")
     logger.info("=" * 60)
     X_train_fe, extra_fes, lookup_tables = run_feature_pipeline(
-        X_train_raw, extra_dfs=[X_val_raw, test]
+        X_train_raw, extra_dfs=[X_val_raw, test], y_train=y_tr,
     )
     X_val_fe, test_fe = extra_fes
 
@@ -333,7 +336,10 @@ def main():
     logger.info("=" * 60)
     logger.info("  STEP 7d: PROBABILITY CALIBRATION")
     logger.info("=" * 60)
+    y_prob_before_cal = best_model.predict_proba(X_val_fe)[:, 1]
     best_model = calibrate_model(best_model, X_val_fe, y_val, method="isotonic")
+    y_prob_after_cal = best_model.predict_proba(X_val_fe)[:, 1]
+    plot_calibration_curve(y_val, y_prob_before_cal, y_prob_after_cal, name=best_model_name)
 
     # ── 8. Serialise best model + lookup tables ───────────────────────────
     model_path  = os.path.join(OUTPUT_DIR, "best_model.joblib")
@@ -363,6 +369,24 @@ def main():
         target_row["actual_recall"] * 100,
         target_row["precision"] * 100,
     )
+
+    # ── 10a. F-beta threshold optimisation ───────────────────────────────
+    logger.info("=" * 60)
+    logger.info("  STEP 10a: F-BETA THRESHOLD OPTIMISATION")
+    logger.info("=" * 60)
+    fbeta_df = optimize_threshold_fbeta(y_val, y_val_prob, betas=[0.5, 1.0, 2.0])
+    fbeta_path = os.path.join(OUTPUT_DIR, "fbeta_thresholds.csv")
+    fbeta_df.to_csv(fbeta_path, index=False)
+    logger.info("F-beta thresholds saved to %s", fbeta_path)
+
+    # ── 10b. Cost-sensitive evaluation ───────────────────────────────────
+    logger.info("=" * 60)
+    logger.info("  STEP 10b: COST-SENSITIVE EVALUATION")
+    logger.info("=" * 60)
+    cost_df = compute_expected_cost(y_val, y_val_prob, cost_fn=100.0, cost_fp=1.0)
+    cost_path = os.path.join(OUTPUT_DIR, "cost_analysis.csv")
+    cost_df.to_csv(cost_path, index=False)
+    logger.info("Cost analysis saved to %s", cost_path)
 
     test_probs = best_model.predict_proba(test_fe)[:, 1]
     test_preds = (test_probs >= chosen_threshold).astype(int)
