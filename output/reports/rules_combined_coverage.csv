@@ -1,0 +1,16 @@
+n_rules,last_rule,precision,recall,n_flagged,n_fraud_hit,n_fraud_total,lift
+1,Transaction Success = Yes AND Card Txn Count (last 30 days) <= 1.50 AND Transact,0.0082,0.7222,3154,26,36,5.22
+2,Transaction Success = Yes AND Card Average Amount (EUR) <= 128.89 AND Log Transa,0.0082,0.75,3295,27,36,5.19
+3,Transaction Success = Yes AND Card Txn Count (last 30 days) <= 1.50 AND Card Ave,0.0076,0.7778,3687,28,36,4.81
+4,Transaction Success = Yes AND Card Average Amount (EUR) <= 128.89 AND Log Transa,0.0071,0.7778,3945,28,36,4.49
+5,Transaction Success = Yes AND Card Average Amount (EUR) <= 128.89 AND Log Transa,0.0071,0.7778,3945,28,36,4.49
+6,Transaction Success = Yes AND Card Txn Count (last 30 days) <= 1.50 AND Transact,0.0057,0.9444,5937,34,36,3.62
+7,Transaction Success = Yes AND Card Txn Count (last 30 days) <= 1.50 AND Card Ave,0.0057,0.9444,5963,34,36,3.61
+8,Transaction Success = Yes AND Card Txn Count (last 14 days) <= 1.50 AND Transact,0.0057,0.9444,5985,34,36,3.59
+9,Transaction Success = Yes AND Card Txn Count (last 30 days) <= 1.50,0.0057,0.9444,5985,34,36,3.59
+10,Transaction Success = Yes AND Card Txn Count (last 14 days) <= 1.50 AND Transact,0.0057,0.9444,5986,34,36,3.59
+11,Transaction Success = Yes AND Card Txn Count (last 14 days) <= 1.50 AND Log Tran,0.0056,0.9444,6018,34,36,3.58
+12,Transaction Success = Yes AND Card Txn Count (last 14 days) <= 1.50 AND Log Tran,0.0056,0.9444,6067,34,36,3.55
+13,Transaction Success = Yes AND Card Average Amount (EUR) <= 128.89 AND Transactio,0.0056,0.9444,6068,34,36,3.55
+14,Transaction Success = Yes AND Card Txn Count (last 14 days) <= 1.50 AND Log Tran,0.0054,0.9444,6297,34,36,3.42
+15,Transaction Success = Yes AND Card Average Amount (EUR) <= 128.89,0.0052,0.9444,6597,34,36,3.26

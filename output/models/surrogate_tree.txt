@@ -1,0 +1,73 @@
+|--- cvvused <= 0.50
+|   |--- success <= 0.50
+|   |   |--- class: 0
+|   |--- success >  0.50
+|   |   |--- card_txn_30d <= 1.50
+|   |   |   |--- card_avg_amount <= 99.99
+|   |   |   |   |--- log_euramount <= 2.77
+|   |   |   |   |   |--- merchant_txn_count <= 268.00
+|   |   |   |   |   |   |--- class: 1
+|   |   |   |   |   |--- merchant_txn_count >  268.00
+|   |   |   |   |   |   |--- class: 0
+|   |   |   |   |--- log_euramount >  2.77
+|   |   |   |   |   |--- initialrecurring <= 0.50
+|   |   |   |   |   |   |--- class: 1
+|   |   |   |   |   |--- initialrecurring >  0.50
+|   |   |   |   |   |   |--- class: 0
+|   |   |   |--- card_avg_amount >  99.99
+|   |   |   |   |--- log_euramount <= 4.40
+|   |   |   |   |   |--- class: 0
+|   |   |   |   |--- log_euramount >  4.40
+|   |   |   |   |   |--- class: 0
+|   |   |--- card_txn_30d >  1.50
+|   |   |   |--- merchant_txn_count <= 16631.50
+|   |   |   |   |--- class: 0
+|   |   |   |--- merchant_txn_count >  16631.50
+|   |   |   |   |--- hours_since_last_txn <= 47.61
+|   |   |   |   |   |--- class: 0
+|   |   |   |   |--- hours_since_last_txn >  47.61
+|   |   |   |   |   |--- class: 0
+|--- cvvused >  0.50
+|   |--- hours_since_last_txn <= 501.48
+|   |   |--- domain_freq <= 0.00
+|   |   |   |--- hours_since_last_txn <= 72.55
+|   |   |   |   |--- amount_deviation <= 8.48
+|   |   |   |   |   |--- class: 0
+|   |   |   |   |--- amount_deviation >  8.48
+|   |   |   |   |   |--- class: 0
+|   |   |   |--- hours_since_last_txn >  72.55
+|   |   |   |   |--- class: 0
+|   |   |--- domain_freq >  0.00
+|   |   |   |--- card_txn_3d <= 1.50
+|   |   |   |   |--- merchant_txn_count <= 5049.50
+|   |   |   |   |   |--- card_merchant_first <= 0.50
+|   |   |   |   |   |   |--- class: 0
+|   |   |   |   |   |--- card_merchant_first >  0.50
+|   |   |   |   |   |   |--- class: 0
+|   |   |   |   |--- merchant_txn_count >  5049.50
+|   |   |   |   |   |--- recurring <= 0.50
+|   |   |   |   |   |   |--- class: 0
+|   |   |   |   |   |--- recurring >  0.50
+|   |   |   |   |   |   |--- class: 0
+|   |   |   |--- card_txn_3d >  1.50
+|   |   |   |   |--- class: 0
+|   |--- hours_since_last_txn >  501.48
+|   |   |--- initialrecurring <= 0.50
+|   |   |   |--- merchant_txn_count <= 4381.00
+|   |   |   |   |--- success <= 0.50
+|   |   |   |   |   |--- class: 0
+|   |   |   |   |--- success >  0.50
+|   |   |   |   |   |--- log_euramount <= 2.86
+|   |   |   |   |   |   |--- class: 0
+|   |   |   |   |   |--- log_euramount >  2.86
+|   |   |   |   |   |   |--- class: 0
+|   |   |   |--- merchant_txn_count >  4381.00
+|   |   |   |   |--- success <= 0.50
+|   |   |   |   |   |--- class: 0
+|   |   |   |   |--- success >  0.50
+|   |   |   |   |   |--- log_euramount <= 2.69
+|   |   |   |   |   |   |--- class: 0
+|   |   |   |   |   |--- log_euramount >  2.69
+|   |   |   |   |   |   |--- class: 1
+|   |   |--- initialrecurring >  0.50
+|   |   |   |--- class: 0

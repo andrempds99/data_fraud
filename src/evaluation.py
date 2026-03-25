@@ -469,3 +469,117 @@ def plot_overfit_comparison(baseline_metrics, reg_metrics, name="XGBoost"):
     fig.savefig(path, dpi=150)
     plt.close(fig)
     logger.info("  Saved %s", path)
+
+
+# ── SHAP dependence plots ─────────────────────────────────────────────────────
+
+def plot_shap_dependence(model, X_val, name="Model", top_n=6):
+    """SHAP dependence plots for the top-N most predictive features.
+
+    For each top feature the x-axis shows the *original* (unscaled) feature
+    value and the y-axis shows the SHAP contribution to the fraud score.
+    Natural breakpoints in these scatter plots indicate where rule thresholds
+    should be placed — regions where the SHAP value crosses zero correspond
+    to the point at which a feature starts actively increasing fraud risk.
+
+    Parameters
+    ----------
+    model : fitted sklearn Pipeline with 'preprocessor' and 'classifier' steps.
+    X_val : pd.DataFrame — raw (unscaled) validation features.
+    name  : str — used for output file naming and titles.
+    top_n : int — number of top features to plot (arranged in a grid).
+    """
+    _ensure_output_dir()
+    try:
+        import shap
+    except ImportError:
+        logger.warning("  shap not installed (pip install shap), skipping dependence plots.")
+        return
+
+    if not hasattr(model, "named_steps"):
+        logger.info("  SHAP dependence: model is not a Pipeline, skipping.")
+        return
+
+    classifier = model.named_steps["classifier"]
+    preprocessor = model.named_steps["preprocessor"]
+    clf_type = type(classifier).__name__
+
+    if clf_type not in (
+        "XGBClassifier", "LGBMClassifier",
+        "RandomForestClassifier", "GradientBoostingClassifier",
+    ):
+        logger.info("  SHAP dependence: unsupported classifier %s, skipping.", clf_type)
+        return
+
+    X_t = preprocessor.transform(X_val)
+    try:
+        feat_names = list(preprocessor.get_feature_names_out())
+    except AttributeError:
+        feat_names = [f"f{i}" for i in range(X_t.shape[1])]
+
+    logger.info("  Computing SHAP values for dependence plots (%s) …", name)
+    explainer = shap.TreeExplainer(classifier)
+    shap_values = explainer.shap_values(X_t)
+    if isinstance(shap_values, list):
+        shap_values = shap_values[1]  # fraud class
+
+    # Rank features by mean |SHAP|
+    mean_abs_shap = np.abs(shap_values).mean(axis=0)
+    top_idx = np.argsort(mean_abs_shap)[::-1][:top_n]
+
+    ncols = 3
+    nrows = (top_n + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 4 * nrows))
+    axes_flat = np.array(axes).flatten()
+
+    rng = np.random.default_rng(42)
+
+    for plot_pos, feat_idx in enumerate(top_idx):
+        ax = axes_flat[plot_pos]
+        transformed_name = feat_names[feat_idx]
+        shap_col = shap_values[:, feat_idx]
+
+        # Use original (unscaled) values for numeric features so the x-axis
+        # is immediately readable in business units.
+        if transformed_name.startswith("num__"):
+            orig_col = transformed_name[len("num__"):]
+            if orig_col in X_val.columns:
+                feat_vals = X_val[orig_col].values
+                x_label = orig_col.replace("_", " ").title()
+            else:
+                feat_vals = X_t[:, feat_idx]
+                x_label = transformed_name
+        else:
+            feat_vals = X_t[:, feat_idx]
+            x_label = transformed_name.replace("num__", "").replace("cat__", "")
+
+        # Subsample large arrays for plotting speed
+        n = len(feat_vals)
+        if n > 5000:
+            sample_idx = rng.choice(n, size=5000, replace=False)
+            fv_plot = feat_vals[sample_idx]
+            sv_plot = shap_col[sample_idx]
+        else:
+            fv_plot = feat_vals
+            sv_plot = shap_col
+
+        ax.scatter(fv_plot, sv_plot, alpha=0.3, s=6, color="steelblue")
+        ax.axhline(0, color="grey", linewidth=0.8, linestyle="--")
+        ax.set_xlabel(x_label, fontsize=9)
+        ax.set_ylabel("SHAP value", fontsize=9)
+        ax.set_title(x_label, fontsize=10, fontweight="bold")
+
+    # Hide unused panels
+    for ax in axes_flat[top_n:]:
+        ax.set_visible(False)
+
+    fig.suptitle(
+        f"SHAP Dependence Plots — {name}\n"
+        "(y > 0 increases fraud score; zero-crossings indicate rule thresholds)",
+        fontsize=11,
+    )
+    plt.tight_layout()
+    path = os.path.join(OUTPUT_DIR, f"shap_dependence_{name}.png")
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info("  Saved %s", path)

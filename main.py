@@ -38,6 +38,13 @@ warnings.filterwarnings(
     message="X does not have valid feature names",
     category=UserWarning,
 )
+# Learning curves on a calibrated model triggered when tiny training folds
+# have fewer than 3 fraud examples — expected and non-fatal.
+warnings.filterwarnings(
+    "ignore",
+    message=".*fits failed.*",
+    category=UserWarning,
+)
 
 from src.config import OUTPUT_DIR, SEED, NUMERIC_FEATURES, CATEGORICAL_FEATURES
 from src.data_quality import load_data, run_quality_pipeline
@@ -62,8 +69,11 @@ from src.evaluation import (
     plot_pr_comparison,
     plot_metrics_comparison,
     plot_shap_summary,
+    plot_shap_dependence,
     plot_overfit_comparison,
 )
+from src.rules import run_rule_extraction
+from src.output_manager import reset_output_dir, organize_output_dir
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,7 +87,8 @@ RUN_CV_SELECTION   = os.environ.get("RUN_CV_SELECTION",   "0") == "1"
 
 
 def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # Start from a clean slate so each run only contains fresh artifacts.
+    reset_output_dir(OUTPUT_DIR)
 
     run_start = datetime.now(tz=timezone.utc)
     logger.info("=" * 60)
@@ -316,6 +327,7 @@ def main():
     logger.info("  STEP 7c: SHAP EXPLAINABILITY")
     logger.info("=" * 60)
     plot_shap_summary(best_model, X_val_fe, name=best_model_name)
+    plot_shap_dependence(best_model, X_val_fe, name=best_model_name)
 
     # ── 7d. Probability calibration ──────────────────────────────────────
     logger.info("=" * 60)
@@ -369,6 +381,24 @@ def main():
     logger.info("Predicted fraud: %d / %d (%.2f%%)",
         test_preds.sum(), len(test_preds), test_preds.mean() * 100,
     )
+
+    # ── 11. Rule extraction ───────────────────────────────────────────────
+    logger.info("=" * 60)
+    logger.info("  STEP 11: RULE EXTRACTION")
+    logger.info("=" * 60)
+    run_rule_extraction(
+        best_model=best_model,
+        best_model_name=best_model_name,
+        X_train=X_train_fe,
+        y_train=y_tr,
+        X_val=X_val_fe,
+        y_val=y_val,
+        recall_threshold=chosen_threshold,
+        all_models=models,
+    )
+
+    # Final pass: relocate files/folders into a consistent output layout.
+    organize_output_dir(OUTPUT_DIR)
 
     run_end = datetime.now(tz=timezone.utc)
     logger.info("=" * 60)
